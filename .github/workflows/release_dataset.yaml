@@ -1,0 +1,264 @@
+name: Select Weekly Dataset
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Live run: Monday 13:00 UTC
+    - cron: '0 13 * * 1'
+    # Dry run: Friday 13:00 UTC
+    - cron: '0 13 * * 5'
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  select_dataset:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Determine next Tuesday
+        id: determine_next_tuesday
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // This date is for the *upcoming* Tuesday, which is the official release date.
+            const today = new Date();
+            const day_of_week = today.getUTCDay(); // 0=Sun, 1=Mon, ..., 6=Sat
+            const days_to_tuesday = (day_of_week < 2) ? (2 - day_of_week) : (9 - day_of_week);
+            const target_date_obj = new Date(today.setDate(today.getDate() + days_to_tuesday));
+            const target_date = target_date_obj.toISOString().split('T')[0]; // YYYY-MM-DD
+            core.info(`Target TidyTuesday date: ${target_date}`);
+            core.setOutput('target_date', target_date);
+
+      - name: Download dataset index
+        id: download_index
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const INDEX_TAG = 'dataset_index';
+            const INDEX_ASSET = 'dataset_index.csv';
+            
+            try {
+                // Get dataset_index release
+                let index_release;
+                try {
+                    index_release = await github.rest.repos.getReleaseByTag({ owner, repo, tag: INDEX_TAG });
+                    core.info(`Found index release: ${index_release.data.html_url}`);
+                    core.setOutput('index_release_id', index_release.data.id);
+                } catch (e) {
+                    core.setFailed(`Failed to get release by tag '${INDEX_TAG}': ${e.message}`);
+                    return;
+                }
+                
+                // Get dataset_index.csv asset
+                const index_asset = index_release.data.assets.find(a => a.name === INDEX_ASSET);
+                if (!index_asset) {
+                    core.setFailed(`'${INDEX_ASSET}' not found in release '${INDEX_TAG}'.`);
+                    return;
+                }
+                core.setOutput('index_asset_id', index_asset.id);
+
+                // Download asset content using the API
+                const response = await github.rest.repos.getReleaseAsset({
+                    owner,
+                    repo,
+                    asset_id: index_asset.id,
+                    headers: {
+                        Accept: 'application/octet-stream'
+                    }
+                });
+                
+                if (response.status !== 200) {
+                     core.setFailed(`Failed to download index asset: ${response.status}`);
+                     return;
+                }
+
+                // Convert ArrayBuffer to string
+                const index_csv_text = new TextDecoder().decode(response.data);
+                
+                // Save index locally
+                const local_path = './dataset_index.csv';
+                fs.writeFileSync(local_path, index_csv_text);
+                
+                core.info(`Successfully downloaded and saved index to ${local_path}`);
+
+            } catch (error) {
+                core.setFailed(`Workflow failed during index download: ${error.message}\n${error.stack}`);
+            }
+
+      - name: Select dataset
+        id: select_dataset
+        uses: actions/github-script@v7
+        env:
+          TARGET_DATE: ${{ steps.determine_next_tuesday.outputs.target_date }}
+        with:
+          script: |
+            const fs = require('fs');
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const index_csv_path = './dataset_index.csv';
+            const target_date = process.env.TARGET_DATE;
+            const INDEX_TAG = 'dataset_index';
+            
+            try {
+                // Parse dataset_index.csv
+                const index_csv_text = fs.readFileSync(index_csv_path, 'utf-8');
+                const used_tags = index_csv_text.split('\n')
+                    .slice(1) // skip header
+                    .map(line => line.split(',')[1]) // get tag
+                    .filter(tag => tag) // remove empty lines
+                    .map(tag => tag.trim()); // remove \r and other whitespace
+                
+                core.info(used_tags.length > 0 ? `Found ${used_tags.length} used datasets.` : 'Found 0 used datasets.');
+
+                // Get all releases and filter for queue
+                core.info('Fetching all releases...');
+                const all_releases = await github.paginate(github.rest.repos.listReleases, { owner, repo });
+                core.info(`Found ${all_releases.length} total releases.`);
+
+                const queue = all_releases
+                    .filter(r => {
+                        const is_index = r.tag_name === INDEX_TAG;
+                        const is_used = used_tags.includes(r.tag_name);
+                        return !is_index && !is_used;
+                    })
+                    .sort((a, b) => new Date(a.published_at) - new Date(b.published_at)); // oldest first
+
+                core.info(`Found ${queue.length} datasets in the queue.`);
+
+                // Select dataset and set outputs
+                const selected_release = queue[0];
+
+                if (selected_release) {
+                    core.info(`Success: '${selected_release.name}' selected for ${target_date}.`);
+                    core.setOutput('selected_release_json', JSON.stringify(selected_release));
+                } else {
+                    core.warning(`No dataset found in the queue for ${target_date}.`);
+                    core.setOutput('selected_release_json', '');
+                }
+
+            } catch (error) {
+                core.setFailed(`Workflow failed during selection: ${error.message}\n${error.stack}`);
+            }
+          
+      - name: Handle empty queue
+        if: steps.select_dataset.outputs.selected_release_json == ''
+        uses: actions/github-script@v7
+        env:
+          TARGET_DATE: ${{ steps.determine_next_tuesday.outputs.target_date }}
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const target_date = process.env.TARGET_DATE;
+            const ALERT_LABEL = 'alert:queue-empty';
+            
+            core.warning(`No dataset found in the queue for ${target_date}.`);
+            const issue_title = `ALERT: TidyTuesday dataset queue is empty for ${target_date}`;
+            
+            // Check for existing open issue
+            const { data: issues } = await github.rest.issues.listForRepo({ owner, repo, labels: ALERT_LABEL, state: 'open' });
+            const existing_issue = issues.find(i => i.title.startsWith('ALERT: TidyTuesday dataset queue is empty'));
+
+            if (existing_issue) {
+                core.info(`Alert issue already exists: ${existing_issue.html_url}`);
+                if (existing_issue.title !== issue_title) {
+                    core.info('Updating existing issue with new target date.');
+                    await github.rest.issues.update({
+                        owner,
+                        repo,
+                        issue_number: existing_issue.number,
+                        title: issue_title,
+                        body: `The automated dataset selection failed because the queue is empty. Please add new dataset releases to the repository.\n\nTarget date: ${target_date}`
+                    });
+                }
+            } else {
+                core.info('Creating new alert issue...');
+                await github.rest.issues.create({
+                    owner,
+                    repo,
+                    title: issue_title,
+                    body: `The automated dataset selection failed because the queue is empty. Please add new dataset releases to the repository to be picked up by the TidyTuesday workflow.\n\nTarget date: ${target_date}`,
+                    labels: [ALERT_LABEL]
+                });
+            }
+
+      - name: Determine run mode
+        id: determine_mode
+        run: |
+          if [ $(date -u +'%u') -eq 1 ]; then
+            echo "is_live_run=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Publish and index dataset
+        if: steps.determine_mode.outputs.is_live_run == 'true' && steps.select_dataset.outputs.selected_release_json != ''
+        uses: actions/github-script@v7
+        env:
+          TARGET_DATE: ${{ steps.determine_next_tuesday.outputs.target_date }}
+          SELECTED_RELEASE_JSON: ${{ steps.select_dataset.outputs.selected_release_json }}
+          INDEX_RELEASE_ID: ${{ steps.download_index.outputs.index_release_id }}
+          INDEX_ASSET_ID: ${{ steps.download_index.outputs.index_asset_id }}
+        with:
+          script: |
+            const fs = require('fs');
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const INDEX_ASSET = 'dataset_index.csv';
+
+            // Parse inputs
+            const target_date = process.env.TARGET_DATE;
+            const selected_release = JSON.parse(process.env.SELECTED_RELEASE_JSON);
+            const index_release_id = Number(process.env.INDEX_RELEASE_ID);
+            const index_asset_id = Number(process.env.INDEX_ASSET_ID);
+            const index_csv_path = './dataset_index.csv';
+
+            try {
+                core.info(`[LIVE RUN] Publishing '${selected_release.name}' for ${target_date}.`);
+                const chosen_tag = selected_release.tag_name;
+                const release_id = selected_release.id;
+
+                // Update index
+                const index_csv_text = fs.readFileSync(index_csv_path, 'utf-8');
+                const new_index_csv_text = `${index_csv_text.trim()}\n${target_date},${chosen_tag}\n`;
+                core.info('Index CSV updated in memory.');
+
+                // Upload new index
+                core.info(`Deleting old index asset (ID: ${index_asset_id})...`);
+                await github.rest.repos.deleteReleaseAsset({ owner, repo, asset_id: index_asset_id });
+                
+                core.info('Uploading new index asset...');
+                const csv_buffer = Buffer.from(new_index_csv_text, 'utf-8');
+
+                await github.rest.repos.uploadReleaseAsset({
+                    owner,
+                    repo,
+                    release_id: index_release_id,
+                    name: INDEX_ASSET,
+                    data: csv_buffer,
+                    headers: {
+                        'Content-Type': 'text/csv',
+                        'Content-Length': csv_buffer.length
+                    }
+                });
+                core.info('New index asset uploaded.');
+
+                // Update latest release
+                core.info(`Marking release '${chosen_tag}' (ID: ${release_id}) as latest...`);
+                await github.rest.repos.updateRelease({
+                    owner,
+                    repo,
+                    release_id: release_id,
+                    make_latest: true
+                });
+                core.info(`'${chosen_tag}' is now the latest release.`);
+                core.info('Process complete.');
+
+            } catch (error) {
+                core.setFailed(`Workflow failed during publish: ${error.message}\n${error.stack}`);
+            }
