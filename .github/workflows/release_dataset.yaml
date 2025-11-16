@@ -28,11 +28,6 @@ jobs:
             // This date is for the *upcoming* Tuesday, which is the official release date.
             const today = new Date();
             const day_of_week = today.getUTCDay(); // 0=Sun, 1=Mon, ..., 6=Sat
-            // Days to add to get to next Tuesday (day 2)
-            // If today is Sun (0), add 2 days. 2 - 0
-            // If today is Mon (1), add 1 day. 2 - 1
-            // If today is Tue (2), add 7 days (for *next* week). 9 - 2
-            // If today is Fri (5), add 4 days. 9 - 5
             const days_to_tuesday = (day_of_week < 2) ? (2 - day_of_week) : (9 - day_of_week);
             const target_date_obj = new Date(today.setDate(today.getDate() + days_to_tuesday));
             const target_date = target_date_obj.toISOString().split('T')[0]; // YYYY-MM-DD
@@ -102,15 +97,16 @@ jobs:
       - name: Select dataset
         id: select_dataset
         uses: actions/github-script@v7
+        env:
+          INDEX_CSV_PATH: ${{ steps.download_index.outputs.index_csv_path }}
+          TARGET_DATE: ${{ steps.determine_next_tuesday.outputs.target_date }}
         with:
-          index_csv_path: ${{ steps.download_index.outputs.index_csv_path }}
-          target_date: ${{ steps.determine_next_tuesday.outputs.target_date }}
           script: |
             const fs = require('fs');
             const owner = context.repo.owner;
             const repo = context.repo.repo;
-            const index_csv_path = inputs.index_csv_path;
-            const target_date = inputs.target_date;
+            const index_csv_path = process.env.INDEX_CSV_PATH;
+            const target_date = process.env.TARGET_DATE;
             const INDEX_TAG = 'dataset_index';
             
             try {
@@ -156,12 +152,13 @@ jobs:
       - name: Handle empty queue
         if: steps.select_dataset.outputs.selected_release_json == ''
         uses: actions/github-script@v7
+        env:
+          TARGET_DATE: ${{ steps.determine_next_tuesday.outputs.target_date }}
         with:
-          target_date: ${{ steps.determine_next_tuesday.outputs.target_date }}
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
-            const target_date = inputs.target_date;
+            const target_date = process.env.TARGET_DATE;
             const ALERT_LABEL = 'alert:queue-empty';
             
             core.warning(`No dataset found in the queue for ${target_date}.`);
@@ -194,15 +191,20 @@ jobs:
                 });
             }
 
+      - name: Determine run mode
+        id: determine_mode
+        run: [ $(date -u +'%u') -eq 1 ] && echo "is_live_run=true" >> $GITHUB_OUTPUT
+
       - name: Publish and index dataset
         if: steps.determine_mode.outputs.is_live_run == 'true' && steps.select_dataset.outputs.selected_release_json != ''
         uses: actions/github-script@v7
+        env:
+          TARGET_DATE: ${{ steps.determine_next_tuesday.outputs.target_date }}
+          SELECTED_RELEASE_JSON: ${{ steps.select_dataset.outputs.selected_release_json }}
+          INDEX_RELEASE_ID: ${{ steps.download_index.outputs.index_release_id }}
+          INDEX_ASSET_ID: ${{ steps.download_index.outputs.index_asset_id }}
+          INDEX_CSV_PATH: ${{ steps.download_index.outputs.index_csv_path }}
         with:
-          target_date: ${{ steps.determine_next_tuesday.outputs.target_date }}
-          selected_release_json: ${{ steps.select_dataset.outputs.selected_release_json }}
-          index_release_id: ${{ steps.download_index.outputs.index_release_id }}
-          index_asset_id: ${{ steps.download_index.outputs.index_asset_id }}
-          index_csv_path: ${{ steps.download_index.outputs.index_csv_path }}
           script: |
             const fs = require('fs');
             const owner = context.repo.owner;
@@ -210,11 +212,11 @@ jobs:
             const INDEX_ASSET = 'dataset_index.csv';
 
             // Parse inputs
-            const target_date = inputs.target_date;
-            const selected_release = JSON.parse(inputs.selected_release_json);
-            const index_release_id = Number(inputs.index_release_id);
-            const index_asset_id = Number(inputs.index_asset_id);
-            const index_csv_path = inputs.index_csv_path;
+            const target_date = process.env.TARGET_DATE;
+            const selected_release = JSON.parse(process.env.SELECTED_RELEASE_JSON);
+            const index_release_id = Number(process.env.INDEX_RELEASE_ID);
+            const index_asset_id = Number(process.env.INDEX_ASSET_ID);
+            const index_csv_path = process.env.INDEX_CSV_PATH;
 
             try {
                 core.info(`[LIVE RUN] Publishing '${selected_release.name}' for ${target_date}.`);
