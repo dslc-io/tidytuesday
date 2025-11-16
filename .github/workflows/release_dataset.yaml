@@ -115,7 +115,8 @@ jobs:
                 const used_tags = index_csv_text.split('\n')
                     .slice(1) // skip header
                     .map(line => line.split(',')[1]) // get tag
-                    .filter(Boolean); // remove empty lines
+                    .filter(tag => tag) // remove empty lines
+                    .map(tag => tag.trim()); // remove \r and other whitespace
                 
                 core.info(used_tags.length > 0 ? `Found ${used_tags.length} used datasets.` : 'Found 0 used datasets.');
 
