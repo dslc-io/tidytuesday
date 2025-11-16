@@ -87,7 +87,6 @@ jobs:
                 fs.writeFileSync(local_path, index_csv_text);
                 
                 core.info(`Successfully downloaded and saved index to ${local_path}`);
-                core.setOutput('index_csv_path', local_path);
 
             } catch (error) {
                 core.setFailed(`Workflow failed during index download: ${error.message}\n${error.stack}`);
@@ -97,14 +96,13 @@ jobs:
         id: select_dataset
         uses: actions/github-script@v7
         env:
-          INDEX_CSV_PATH: ${{ steps.download_index.outputs.index_csv_path }}
           TARGET_DATE: ${{ steps.determine_next_tuesday.outputs.target_date }}
         with:
           script: |
             const fs = require('fs');
             const owner = context.repo.owner;
             const repo = context.repo.repo;
-            const index_csv_path = process.env.INDEX_CSV_PATH;
+            const index_csv_path = './dataset_index.csv';
             const target_date = process.env.TARGET_DATE;
             const INDEX_TAG = 'dataset_index';
             
@@ -206,7 +204,6 @@ jobs:
           SELECTED_RELEASE_JSON: ${{ steps.select_dataset.outputs.selected_release_json }}
           INDEX_RELEASE_ID: ${{ steps.download_index.outputs.index_release_id }}
           INDEX_ASSET_ID: ${{ steps.download_index.outputs.index_asset_id }}
-          INDEX_CSV_PATH: ${{ steps.download_index.outputs.index_csv_path }}
         with:
           script: |
             const fs = require('fs');
@@ -219,7 +216,7 @@ jobs:
             const selected_release = JSON.parse(process.env.SELECTED_RELEASE_JSON);
             const index_release_id = Number(process.env.INDEX_RELEASE_ID);
             const index_asset_id = Number(process.env.INDEX_ASSET_ID);
-            const index_csv_path = process.env.INDEX_CSV_PATH;
+            const index_csv_path = './dataset_index.csv';
 
             try {
                 core.info(`[LIVE RUN] Publishing '${selected_release.name}' for ${target_date}.`);
