@@ -131,7 +131,7 @@ jobs:
                         const is_used = used_tags.includes(r.tag_name);
                         return !is_index && !is_used;
                     })
-                    .sort((a, b) => new Date(a.created_at) - new Date(b.created_at)); // oldest first
+                    .sort((a, b) => new Date(a.published_at) - new Date(b.published_at)); // oldest first
 
                 core.info(`Found ${queue.length} datasets in the queue.`);
 
