@@ -193,7 +193,8 @@ jobs:
 
       - name: Determine run mode
         id: determine_mode
-        run: [ $(date -u +'%u') -eq 1 ] && echo "is_live_run=true" >> $GITHUB_OUTPUT
+        run: |
+          [ $(date -u +'%u') -eq 1 ] && echo "is_live_run=true" >> $GITHUB_OUTPUT
 
       - name: Publish and index dataset
         if: steps.determine_mode.outputs.is_live_run == 'true' && steps.select_dataset.outputs.selected_release_json != ''
