@@ -2,11 +2,11 @@ name: Select Weekly Dataset
 
 on:
   workflow_dispatch:
-  schedule:
+#  schedule:
     # Live run: Monday 13:00 UTC
-    - cron: '0 13 * * 1'
+#    - cron: '0 13 * * 1'
     # Dry run: Friday 13:00 UTC
-    - cron: '0 13 * * 5'
+#    - cron: '0 13 * * 5'
 
 permissions:
   contents: write
